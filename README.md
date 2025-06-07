@@ -23,9 +23,11 @@ $ prometheus-tsdb-dump -block /path/to/prometheus-data/block-ulid -format victor
 - `-format`: Output format (default: victoriametrics)
 - `-min-timestamp`: Minimum timestamp of exported samples (unix time in msec)
 - `-max-timestamp`: Maximum timestamp of exported samples (unix time in msec)
+- The `-block` path can point to a local directory or an `s3://` location.
 - `-dump-index`: Dump block index information. The block path can point to a
   local directory or an `s3://` location.
-- `-aws-profile`: AWS profile to use when accessing S3 for `-dump-index`
+- `-aws-profile`: AWS profile to use when accessing S3 for `-dump-index` or
+  when reading a block from S3 with `-block`
 
 ## Output Formats
 

@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math"
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/ryotarai/prometheus-tsdb-dump/pkg/writer"
@@ -49,12 +51,12 @@ func main() {
 		return
 	}
 
-	if err := run(*blockPath, *labelKey, *labelValue, *format, *minTimestamp, *maxTimestamp, *externalLabels); err != nil {
+	if err := run(*blockPath, *labelKey, *labelValue, *format, *minTimestamp, *maxTimestamp, *externalLabels, *awsProfile); err != nil {
 		log.Fatalf("error: %s", err)
 	}
 }
 
-func run(blockPath string, labelKey string, labelValue string, outFormat string, minTimestamp int64, maxTimestamp int64, externalLabelsJSON string) error {
+func run(blockPath string, labelKey string, labelValue string, outFormat string, minTimestamp int64, maxTimestamp int64, externalLabelsJSON string, awsProfile string) error {
 	externalLabelsMap := map[string]string{}
 	if err := json.NewDecoder(strings.NewReader(externalLabelsJSON)).Decode(&externalLabelsMap); err != nil {
 		return errors.Wrap(err, "decode external labels")
@@ -68,10 +70,11 @@ func run(blockPath string, labelKey string, labelValue string, outFormat string,
 
 	logger := gokitlog.NewLogfmtLogger(os.Stderr)
 
-	block, err := tsdb.OpenBlock(logger, blockPath, chunkenc.NewPool())
+	block, cleanup, err := openBlock(blockPath, awsProfile, logger)
 	if err != nil {
-		return errors.Wrap(err, "tsdb.OpenBlock")
+		return errors.Wrap(err, "open block")
 	}
+	defer cleanup()
 
 	indexr, err := block.Index()
 	if err != nil {
@@ -198,6 +201,102 @@ func runDumpIndex(blockPath string, labelKey string, labelValue string, awsProfi
 		return errors.Wrap(postings.Err(), "postings.Err")
 	}
 
+	return nil
+}
+
+func openBlock(blockPath string, awsProfile string, logger gokitlog.Logger) (*tsdb.Block, func(), error) {
+	if strings.HasPrefix(blockPath, "s3://") {
+		bucket, key, err := parseS3Path(blockPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		var sess *session.Session
+		if awsProfile != "" {
+			sess, err = session.NewSessionWithOptions(session.Options{
+				Profile:           awsProfile,
+				SharedConfigState: session.SharedConfigEnable,
+			})
+		} else {
+			sess, err = session.NewSession()
+		}
+		if err != nil {
+			return nil, nil, errors.Wrap(err, "new aws session")
+		}
+
+		tmpDir, err := ioutil.TempDir("", "tsdb-block-")
+		if err != nil {
+			return nil, nil, errors.Wrap(err, "create temp dir")
+		}
+
+		if err := downloadS3Block(sess, bucket, key, tmpDir); err != nil {
+			os.RemoveAll(tmpDir)
+			return nil, nil, err
+		}
+
+		b, err := tsdb.OpenBlock(logger, tmpDir, chunkenc.NewPool())
+		if err != nil {
+			os.RemoveAll(tmpDir)
+			return nil, nil, err
+		}
+
+		cleanup := func() {
+			b.Close()
+			os.RemoveAll(tmpDir)
+		}
+
+		return b, cleanup, nil
+	}
+
+	b, err := tsdb.OpenBlock(logger, blockPath, chunkenc.NewPool())
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := func() { b.Close() }
+	return b, cleanup, nil
+}
+
+func downloadS3Block(sess *session.Session, bucket, key, dest string) error {
+	cli := s3.New(sess)
+	downloader := s3manager.NewDownloader(sess)
+
+	prefix := path.Clean(key) + "/"
+	token := (*string)(nil)
+	for {
+		out, err := cli.ListObjectsV2(&s3.ListObjectsV2Input{
+			Bucket:            aws.String(bucket),
+			Prefix:            aws.String(prefix),
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return errors.Wrap(err, "list objects")
+		}
+		for _, obj := range out.Contents {
+			if strings.HasSuffix(*obj.Key, "/") {
+				continue
+			}
+			rel := strings.TrimPrefix(*obj.Key, prefix)
+			localPath := filepath.Join(dest, rel)
+			if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+				return err
+			}
+			f, err := os.Create(localPath)
+			if err != nil {
+				return err
+			}
+			if _, err := downloader.Download(f, &s3.GetObjectInput{
+				Bucket: aws.String(bucket),
+				Key:    obj.Key,
+			}); err != nil {
+				f.Close()
+				return errors.Wrap(err, "download object")
+			}
+			f.Close()
+		}
+		if out.NextContinuationToken == nil {
+			break
+		}
+		token = out.NextContinuationToken
+	}
 	return nil
 }
 
