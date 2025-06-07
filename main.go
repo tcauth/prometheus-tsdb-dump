@@ -98,15 +98,7 @@ func run(blockPath string, labelKey string, labelValues []string, metricName str
 		if err != nil {
 			return errors.Wrap(err, "parse s3 path")
 		}
-		var sess *session.Session
-		if awsProfile != "" {
-			sess, err = session.NewSessionWithOptions(session.Options{
-				Profile:           awsProfile,
-				SharedConfigState: session.SharedConfigEnable,
-			})
-		} else {
-			sess, err = session.NewSession()
-		}
+		sess, err := newAWSSession(bucket, awsProfile)
 		if err != nil {
 			return errors.Wrap(err, "new aws session")
 		}
@@ -280,15 +272,7 @@ func openBlock(blockPath string, awsProfile string, logger gokitlog.Logger) (*ts
 		if err != nil {
 			return nil, nil, err
 		}
-		var sess *session.Session
-		if awsProfile != "" {
-			sess, err = session.NewSessionWithOptions(session.Options{
-				Profile:           awsProfile,
-				SharedConfigState: session.SharedConfigEnable,
-			})
-		} else {
-			sess, err = session.NewSession()
-		}
+		sess, err := newAWSSession(bucket, awsProfile)
 		if err != nil {
 			return nil, nil, errors.Wrap(err, "new aws session")
 		}
@@ -376,15 +360,7 @@ func openIndexReader(blockPath string, awsProfile string) (*index.Reader, error)
 		if err != nil {
 			return nil, err
 		}
-		var sess *session.Session
-		if awsProfile != "" {
-			sess, err = session.NewSessionWithOptions(session.Options{
-				Profile:           awsProfile,
-				SharedConfigState: session.SharedConfigEnable,
-			})
-		} else {
-			sess, err = session.NewSession()
-		}
+		sess, err := newAWSSession(bucket, awsProfile)
 		if err != nil {
 			return nil, errors.Wrap(err, "new aws session")
 		}
@@ -432,4 +408,28 @@ func parseLabelValues(v string) []string {
 		}
 	}
 	return res
+}
+
+func newAWSSession(bucket, profile string) (*session.Session, error) {
+	var sess *session.Session
+	var err error
+	if profile != "" {
+		sess, err = session.NewSessionWithOptions(session.Options{
+			Profile:           profile,
+			SharedConfigState: session.SharedConfigEnable,
+		})
+	} else {
+		sess, err = session.NewSession()
+	}
+	if err != nil {
+		return nil, err
+	}
+	if aws.StringValue(sess.Config.Region) == "" {
+		region, err := s3manager.GetBucketRegion(aws.BackgroundContext(), sess, bucket, "us-east-1")
+		if err != nil {
+			return nil, err
+		}
+		sess.Config.Region = aws.String(region)
+	}
+	return sess, nil
 }
