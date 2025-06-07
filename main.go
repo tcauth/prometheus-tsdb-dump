@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ryotarai/prometheus-tsdb-dump/pkg/chunkreader"
 	"github.com/ryotarai/prometheus-tsdb-dump/pkg/writer"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -85,21 +86,33 @@ func run(blockPath string, labelKey string, labelValues []string, metricName str
 
 	logger := gokitlog.NewLogfmtLogger(os.Stderr)
 
-	block, cleanup, err := openBlock(blockPath, awsProfile, logger)
+	indexr, err := openIndexReader(blockPath, awsProfile)
 	if err != nil {
-		return errors.Wrap(err, "open block")
-	}
-	defer cleanup()
-
-	indexr, err := block.Index()
-	if err != nil {
-		return errors.Wrap(err, "block.Index")
+		return errors.Wrap(err, "open index")
 	}
 	defer indexr.Close()
 
-	chunkr, err := block.Chunks()
-	if err != nil {
-		return errors.Wrap(err, "block.Chunks")
+	var chunkr tsdb.ChunkReader
+	if strings.HasPrefix(blockPath, "s3://") {
+		bucket, key, err := parseS3Path(blockPath)
+		if err != nil {
+			return errors.Wrap(err, "parse s3 path")
+		}
+		var sess *session.Session
+		if awsProfile != "" {
+			sess, err = session.NewSessionWithOptions(session.Options{
+				Profile:           awsProfile,
+				SharedConfigState: session.SharedConfigEnable,
+			})
+		} else {
+			sess, err = session.NewSession()
+		}
+		if err != nil {
+			return errors.Wrap(err, "new aws session")
+		}
+		chunkr = chunkreader.NewS3ChunkReader(sess, bucket, key)
+	} else {
+		chunkr = chunkreader.NewLocalChunkReader(path.Join(blockPath, "chunks"))
 	}
 	defer chunkr.Close()
 
