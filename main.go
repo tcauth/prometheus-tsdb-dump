@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ryotarai/prometheus-tsdb-dump/pkg/chunkreader"
 	"github.com/ryotarai/prometheus-tsdb-dump/pkg/writer"
@@ -29,6 +31,8 @@ import (
 	"github.com/prometheus/prometheus/tsdb/chunks"
 	"github.com/prometheus/prometheus/tsdb/index"
 )
+
+const s3DownloadTimeout = 5 * time.Minute
 
 func main() {
 	blockPath := flag.String("block", "", "Path to block directory")
@@ -311,15 +315,21 @@ func downloadS3Block(sess *session.Session, bucket, key, dest string) error {
 	cli := s3.New(sess)
 	downloader := s3manager.NewDownloader(sess)
 
+	ctx, cancel := context.WithTimeout(context.Background(), s3DownloadTimeout)
+	defer cancel()
+
 	prefix := path.Clean(key) + "/"
 	token := (*string)(nil)
 	for {
-		out, err := cli.ListObjectsV2(&s3.ListObjectsV2Input{
+		out, err := cli.ListObjectsV2WithContext(ctx, &s3.ListObjectsV2Input{
 			Bucket:            aws.String(bucket),
 			Prefix:            aws.String(prefix),
 			ContinuationToken: token,
 		})
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				return err
+			}
 			return errors.Wrap(err, "list objects")
 		}
 		for _, obj := range out.Contents {
@@ -335,11 +345,14 @@ func downloadS3Block(sess *session.Session, bucket, key, dest string) error {
 			if err != nil {
 				return err
 			}
-			if _, err := downloader.Download(f, &s3.GetObjectInput{
+			if _, err := downloader.DownloadWithContext(ctx, f, &s3.GetObjectInput{
 				Bucket: aws.String(bucket),
 				Key:    obj.Key,
 			}); err != nil {
 				f.Close()
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+					return err
+				}
 				return errors.Wrap(err, "download object")
 			}
 			f.Close()
@@ -363,12 +376,18 @@ func openIndexReader(blockPath string, awsProfile string) (*index.Reader, error)
 			return nil, errors.Wrap(err, "new aws session")
 		}
 		downloader := s3manager.NewDownloader(sess)
+		ctx, cancel := context.WithTimeout(context.Background(), s3DownloadTimeout)
+		defer cancel()
+
 		buf := aws.NewWriteAtBuffer([]byte{})
-		_, err = downloader.Download(buf, &s3.GetObjectInput{
+		_, err = downloader.DownloadWithContext(ctx, buf, &s3.GetObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(path.Join(key, "index")),
 		})
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				return nil, err
+			}
 			return nil, errors.Wrap(err, "download index")
 		}
 		return index.NewReader(byteSlice(buf.Bytes()))
