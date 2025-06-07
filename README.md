@@ -29,6 +29,7 @@ $ prometheus-tsdb-dump -block /path/to/prometheus-data/block-ulid -format victor
 - `-aws-profile`: AWS profile to use when accessing S3 for `-dump-index` or
   when reading a block from S3 with `-block`
 - `-output`: Write output to the given file instead of stdout
+- `-label-value`: Comma-separated list of label values to filter by
 
 ## Output Formats
 

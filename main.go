@@ -42,6 +42,8 @@ func main() {
 	output := flag.String("output", "", "File to write output to instead of stdout")
 	flag.Parse()
 
+	labelValues := parseLabelValues(*labelValue)
+
 	if *blockPath == "" {
 		log.Fatal("-block argument is required")
 	}
@@ -57,18 +59,18 @@ func main() {
 	}
 
 	if *dumpIndex {
-		if err := runDumpIndex(*blockPath, *labelKey, *labelValue, *awsProfile, out); err != nil {
+		if err := runDumpIndex(*blockPath, *labelKey, labelValues, *awsProfile, out); err != nil {
 			log.Fatalf("error: %s", err)
 		}
 		return
 	}
 
-	if err := run(*blockPath, *labelKey, *labelValue, *format, *minTimestamp, *maxTimestamp, *externalLabels, *awsProfile, out); err != nil {
+	if err := run(*blockPath, *labelKey, labelValues, *format, *minTimestamp, *maxTimestamp, *externalLabels, *awsProfile, out); err != nil {
 		log.Fatalf("error: %s", err)
 	}
 }
 
-func run(blockPath string, labelKey string, labelValue string, outFormat string, minTimestamp int64, maxTimestamp int64, externalLabelsJSON string, awsProfile string, out io.Writer) error {
+func run(blockPath string, labelKey string, labelValues []string, outFormat string, minTimestamp int64, maxTimestamp int64, externalLabelsJSON string, awsProfile string, out io.Writer) error {
 	externalLabelsMap := map[string]string{}
 	if err := json.NewDecoder(strings.NewReader(externalLabelsJSON)).Decode(&externalLabelsMap); err != nil {
 		return errors.Wrap(err, "decode external labels")
@@ -100,117 +102,122 @@ func run(blockPath string, labelKey string, labelValue string, outFormat string,
 	}
 	defer chunkr.Close()
 
-	postings, err := indexr.Postings(labelKey, labelValue)
-	if err != nil {
-		return errors.Wrap(err, "indexr.Postings")
-	}
-
 	var it chunkenc.Iterator
-	for postings.Next() {
-		ref := postings.At()
-		lset := labels.Labels{}
-		chks := []chunks.Meta{}
-		if err := indexr.Series(ref, &lset, &chks); err != nil {
-			return errors.Wrap(err, "indexr.Series")
-		}
-		if len(externalLabels) > 0 {
-			lset = append(lset, externalLabels...)
+	for _, val := range labelValues {
+		postings, err := indexr.Postings(labelKey, val)
+		if err != nil {
+			return errors.Wrap(err, "indexr.Postings")
 		}
 
-		for _, meta := range chks {
-			chunk, err := chunkr.Chunk(meta.Ref)
-			if err != nil {
-				return errors.Wrap(err, "chunkr.Chunk")
+		for postings.Next() {
+			ref := postings.At()
+			lset := labels.Labels{}
+			chks := []chunks.Meta{}
+			if err := indexr.Series(ref, &lset, &chks); err != nil {
+				return errors.Wrap(err, "indexr.Series")
+			}
+			if len(externalLabels) > 0 {
+				lset = append(lset, externalLabels...)
 			}
 
-			var timestamps []int64
-			var values []float64
+			for _, meta := range chks {
+				chunk, err := chunkr.Chunk(meta.Ref)
+				if err != nil {
+					return errors.Wrap(err, "chunkr.Chunk")
+				}
 
-			it := chunk.Iterator(it)
-			for it.Next() {
-				t, v := it.At()
-				if math.IsNaN(v) {
+				var timestamps []int64
+				var values []float64
+
+				it := chunk.Iterator(it)
+				for it.Next() {
+					t, v := it.At()
+					if math.IsNaN(v) {
+						continue
+					}
+					if math.IsInf(v, -1) || math.IsInf(v, 1) {
+						continue
+					}
+					if t < minTimestamp || maxTimestamp < t {
+						continue
+					}
+					timestamps = append(timestamps, t)
+					values = append(values, v)
+				}
+				if it.Err() != nil {
+					return errors.Wrap(err, "iterator.Err")
+				}
+
+				if len(timestamps) == 0 {
 					continue
 				}
-				if math.IsInf(v, -1) || math.IsInf(v, 1) {
-					continue
-				}
-				if t < minTimestamp || maxTimestamp < t {
-					continue
-				}
-				timestamps = append(timestamps, t)
-				values = append(values, v)
-			}
-			if it.Err() != nil {
-				return errors.Wrap(err, "iterator.Err")
-			}
 
-			if len(timestamps) == 0 {
-				continue
-			}
-
-			if err := wr.Write(&lset, timestamps, values); err != nil {
-				return errors.Wrap(err, fmt.Sprintf("Writer.Write(%v, %v, %v)", lset, timestamps, values))
+				if err := wr.Write(&lset, timestamps, values); err != nil {
+					return errors.Wrap(err, fmt.Sprintf("Writer.Write(%v, %v, %v)", lset, timestamps, values))
+				}
 			}
 		}
-	}
 
-	if postings.Err() != nil {
-		return errors.Wrap(err, "postings.Err")
+		if postings.Err() != nil {
+			return errors.Wrap(postings.Err(), "postings.Err")
+		}
 	}
 
 	return nil
 }
 
-func runDumpIndex(blockPath string, labelKey string, labelValue string, awsProfile string, out io.Writer) error {
+func runDumpIndex(blockPath string, labelKey string, labelValues []string, awsProfile string, out io.Writer) error {
 	indexr, err := openIndexReader(blockPath, awsProfile)
 	if err != nil {
 		return err
 	}
 	defer indexr.Close()
 
-	postings, err := indexr.Postings(labelKey, labelValue)
-	if err != nil {
-		return errors.Wrap(err, "indexr.Postings")
-	}
-
 	enc := json.NewEncoder(out)
-	for postings.Next() {
-		ref := postings.At()
-		lset := labels.Labels{}
-		chks := []chunks.Meta{}
-		if err := indexr.Series(ref, &lset, &chks); err != nil {
-			return errors.Wrap(err, "indexr.Series")
+
+	for _, val := range labelValues {
+		postings, err := indexr.Postings(labelKey, val)
+		if err != nil {
+			return errors.Wrap(err, "indexr.Postings")
 		}
 
-		metric := map[string]string{}
-		for _, l := range lset {
-			metric[l.Name] = l.Value
+		for postings.Next() {
+			ref := postings.At()
+			lset := labels.Labels{}
+			chks := []chunks.Meta{}
+			if err := indexr.Series(ref, &lset, &chks); err != nil {
+				return errors.Wrap(err, "indexr.Series")
+			}
+
+			metric := map[string]string{}
+			for _, l := range lset {
+				metric[l.Name] = l.Value
+			}
+
+			type meta struct {
+				Ref     uint64 `json:"ref"`
+				MinTime int64  `json:"minTime"`
+				MaxTime int64  `json:"maxTime"`
+			}
+
+			metas := make([]meta, 0, len(chks))
+			for _, m := range chks {
+				metas = append(metas, meta{Ref: m.Ref, MinTime: m.MinTime, MaxTime: m.MaxTime})
+			}
+
+			line := struct {
+				Labels map[string]string `json:"labels"`
+				Chunks []meta            `json:"chunks"`
+			}{Labels: metric, Chunks: metas}
+
+			if err := enc.Encode(line); err != nil {
+				return errors.Wrap(err, "encode")
+			}
 		}
 
-		type meta struct {
-			Ref     uint64 `json:"ref"`
-			MinTime int64  `json:"minTime"`
-			MaxTime int64  `json:"maxTime"`
+		if postings.Err() != nil {
+			return errors.Wrap(postings.Err(), "postings.Err")
 		}
-
-		metas := make([]meta, 0, len(chks))
-		for _, m := range chks {
-			metas = append(metas, meta{Ref: m.Ref, MinTime: m.MinTime, MaxTime: m.MaxTime})
-		}
-
-		line := struct {
-			Labels map[string]string `json:"labels"`
-			Chunks []meta            `json:"chunks"`
-		}{Labels: metric, Chunks: metas}
-
-		if err := enc.Encode(line); err != nil {
-			return errors.Wrap(err, "encode")
-		}
-	}
-
-	if postings.Err() != nil {
-		return errors.Wrap(postings.Err(), "postings.Err")
 	}
 
 	return nil
@@ -360,4 +367,18 @@ func parseS3Path(p string) (bucket, key string, err error) {
 	bucket = u.Host
 	key = strings.TrimPrefix(u.Path, "/")
 	return bucket, key, nil
+}
+
+func parseLabelValues(v string) []string {
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	res := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			res = append(res, s)
+		}
+	}
+	return res
 }
