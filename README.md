@@ -53,3 +53,13 @@ $ cd /path/to/prometheus/data/snapshots/20200110T104512Z-xxxxxxxxxxxx
 $ parallelism="$(nproc)"
 $ find . -mindepth 1 -maxdepth 1 -type d | xargs -n1 -P "$parallelism" sh -c 'echo $0; prometheus-tsdb-dump-linux -block "$0" -format victoriametrics | curl http://your-victoriametrics:8428/api/v1/import -T -'
 ```
+
+### `csv`
+
+The `csv` format outputs one sample per line in comma separated form. Each row contains the metric name (`__name__`), the timestamp in milliseconds, the value, and then the values of remaining labels sorted by their name.
+
+Example:
+
+```
+up,1578636058619,1,a,node-exporter
+```

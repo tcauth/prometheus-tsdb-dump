@@ -13,6 +13,8 @@ func NewWriter(format string) (Writer, error) {
 	switch format {
 	case "victoriametrics":
 		return NewVictoriaMetricsWriter()
+	case "csv":
+		return NewCSVWriter()
 	}
 	return nil, fmt.Errorf("invalid format: %s", format)
 }
