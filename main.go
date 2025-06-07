@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"math"
@@ -38,25 +39,36 @@ func main() {
 	format := flag.String("format", "victoriametrics", "")
 	dumpIndex := flag.Bool("dump-index", false, "Dump index information in JSON and exit")
 	awsProfile := flag.String("aws-profile", "", "AWS profile to use when accessing S3")
+	output := flag.String("output", "", "File to write output to instead of stdout")
 	flag.Parse()
 
 	if *blockPath == "" {
 		log.Fatal("-block argument is required")
 	}
 
+	var out io.Writer = os.Stdout
+	if *output != "" {
+		f, err := os.Create(*output)
+		if err != nil {
+			log.Fatalf("error: %s", err)
+		}
+		defer f.Close()
+		out = f
+	}
+
 	if *dumpIndex {
-		if err := runDumpIndex(*blockPath, *labelKey, *labelValue, *awsProfile); err != nil {
+		if err := runDumpIndex(*blockPath, *labelKey, *labelValue, *awsProfile, out); err != nil {
 			log.Fatalf("error: %s", err)
 		}
 		return
 	}
 
-	if err := run(*blockPath, *labelKey, *labelValue, *format, *minTimestamp, *maxTimestamp, *externalLabels, *awsProfile); err != nil {
+	if err := run(*blockPath, *labelKey, *labelValue, *format, *minTimestamp, *maxTimestamp, *externalLabels, *awsProfile, out); err != nil {
 		log.Fatalf("error: %s", err)
 	}
 }
 
-func run(blockPath string, labelKey string, labelValue string, outFormat string, minTimestamp int64, maxTimestamp int64, externalLabelsJSON string, awsProfile string) error {
+func run(blockPath string, labelKey string, labelValue string, outFormat string, minTimestamp int64, maxTimestamp int64, externalLabelsJSON string, awsProfile string, out io.Writer) error {
 	externalLabelsMap := map[string]string{}
 	if err := json.NewDecoder(strings.NewReader(externalLabelsJSON)).Decode(&externalLabelsMap); err != nil {
 		return errors.Wrap(err, "decode external labels")
@@ -66,7 +78,7 @@ func run(blockPath string, labelKey string, labelValue string, outFormat string,
 		externalLabels = append(externalLabels, labels.Label{Name: k, Value: v})
 	}
 
-	wr, err := writer.NewWriter(outFormat)
+	wr, err := writer.NewWriter(outFormat, out)
 
 	logger := gokitlog.NewLogfmtLogger(os.Stderr)
 
@@ -150,7 +162,7 @@ func run(blockPath string, labelKey string, labelValue string, outFormat string,
 	return nil
 }
 
-func runDumpIndex(blockPath string, labelKey string, labelValue string, awsProfile string) error {
+func runDumpIndex(blockPath string, labelKey string, labelValue string, awsProfile string, out io.Writer) error {
 	indexr, err := openIndexReader(blockPath, awsProfile)
 	if err != nil {
 		return err
@@ -162,7 +174,7 @@ func runDumpIndex(blockPath string, labelKey string, labelValue string, awsProfi
 		return errors.Wrap(err, "indexr.Postings")
 	}
 
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(out)
 	for postings.Next() {
 		ref := postings.At()
 		lset := labels.Labels{}
