@@ -6,17 +6,24 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/url"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/ryotarai/prometheus-tsdb-dump/pkg/writer"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	gokitlog "github.com/go-kit/kit/log"
 	"github.com/pkg/errors"
 	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/chunks"
+	"github.com/prometheus/prometheus/tsdb/index"
 )
 
 func main() {
@@ -140,15 +147,9 @@ func run(blockPath string, labelKey string, labelValue string, outFormat string,
 }
 
 func runDumpIndex(blockPath string, labelKey string, labelValue string) error {
-	logger := gokitlog.NewLogfmtLogger(os.Stderr)
-	block, err := tsdb.OpenBlock(logger, blockPath, chunkenc.NewPool())
+	indexr, err := openIndexReader(blockPath)
 	if err != nil {
-		return errors.Wrap(err, "tsdb.OpenBlock")
-	}
-
-	indexr, err := block.Index()
-	if err != nil {
-		return errors.Wrap(err, "block.Index")
+		return err
 	}
 	defer indexr.Close()
 
@@ -197,4 +198,46 @@ func runDumpIndex(blockPath string, labelKey string, labelValue string) error {
 	}
 
 	return nil
+}
+
+func openIndexReader(blockPath string) (*index.Reader, error) {
+	if strings.HasPrefix(blockPath, "s3://") {
+		bucket, key, err := parseS3Path(blockPath)
+		if err != nil {
+			return nil, err
+		}
+		sess, err := session.NewSession()
+		if err != nil {
+			return nil, errors.Wrap(err, "new aws session")
+		}
+		downloader := s3manager.NewDownloader(sess)
+		buf := aws.NewWriteAtBuffer([]byte{})
+		_, err = downloader.Download(buf, &s3.GetObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(path.Join(key, "index")),
+		})
+		if err != nil {
+			return nil, errors.Wrap(err, "download index")
+		}
+		return index.NewReader(byteSlice(buf.Bytes()))
+	}
+	return index.NewFileReader(path.Join(blockPath, "index"))
+}
+
+type byteSlice []byte
+
+func (b byteSlice) Len() int                    { return len(b) }
+func (b byteSlice) Range(start, end int) []byte { return b[start:end] }
+
+func parseS3Path(p string) (bucket, key string, err error) {
+	u, err := url.Parse(p)
+	if err != nil {
+		return "", "", err
+	}
+	if u.Scheme != "s3" {
+		return "", "", fmt.Errorf("invalid s3 url: %s", p)
+	}
+	bucket = u.Host
+	key = strings.TrimPrefix(u.Path, "/")
+	return bucket, key, nil
 }
