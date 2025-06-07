@@ -84,8 +84,6 @@ func run(blockPath string, labelKey string, labelValues []string, metricName str
 
 	wr, err := writer.NewWriter(outFormat, out)
 
-	logger := gokitlog.NewLogfmtLogger(os.Stderr)
-
 	indexr, err := openIndexReader(blockPath, awsProfile)
 	if err != nil {
 		return errors.Wrap(err, "open index")
