@@ -23,8 +23,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-	gokitlog "github.com/go-kit/kit/log"
-	"github.com/pkg/errors"
+       gokitlog "github.com/go-kit/kit/log"
+       "errors"
+       pkgerrors "github.com/pkg/errors"
 	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
@@ -79,7 +80,7 @@ func main() {
 func run(blockPath string, labelKey string, labelValues []string, metricName string, outFormat string, minTimestamp int64, maxTimestamp int64, externalLabelsJSON string, awsProfile string, out io.Writer) error {
 	externalLabelsMap := map[string]string{}
 	if err := json.NewDecoder(strings.NewReader(externalLabelsJSON)).Decode(&externalLabelsMap); err != nil {
-		return errors.Wrap(err, "decode external labels")
+		return pkgerrors.Wrap(err, "decode external labels")
 	}
 	var externalLabels labels.Labels
 	for k, v := range externalLabelsMap {
@@ -90,7 +91,7 @@ func run(blockPath string, labelKey string, labelValues []string, metricName str
 
 	indexr, err := openIndexReader(blockPath, awsProfile)
 	if err != nil {
-		return errors.Wrap(err, "open index")
+		return pkgerrors.Wrap(err, "open index")
 	}
 	defer indexr.Close()
 
@@ -98,11 +99,11 @@ func run(blockPath string, labelKey string, labelValues []string, metricName str
 	if strings.HasPrefix(blockPath, "s3://") {
 		bucket, key, err := parseS3Path(blockPath)
 		if err != nil {
-			return errors.Wrap(err, "parse s3 path")
+			return pkgerrors.Wrap(err, "parse s3 path")
 		}
 		sess, err := newAWSSession(bucket, awsProfile)
 		if err != nil {
-			return errors.Wrap(err, "new aws session")
+			return pkgerrors.Wrap(err, "new aws session")
 		}
 		chunkr = chunkreader.NewS3ChunkReader(sess, bucket, key)
 	} else {
@@ -122,7 +123,7 @@ func run(blockPath string, labelKey string, labelValues []string, metricName str
 		var err error
 		metricPostings, err = indexr.Postings(labels.MetricName, metricName)
 		if err != nil {
-			return errors.Wrap(err, "indexr.Postings metric")
+			return pkgerrors.Wrap(err, "indexr.Postings metric")
 		}
 	}
 
@@ -130,7 +131,7 @@ func run(blockPath string, labelKey string, labelValues []string, metricName str
 	for _, val := range labelValues {
 		postings, err := indexr.Postings(labelKey, val)
 		if err != nil {
-			return errors.Wrap(err, "indexr.Postings")
+			return pkgerrors.Wrap(err, "indexr.Postings")
 		}
 		if metricPostings != nil {
 			postings = index.Intersect(postings, metricPostings)
@@ -141,7 +142,7 @@ func run(blockPath string, labelKey string, labelValues []string, metricName str
 			lset := labels.Labels{}
 			chks := []chunks.Meta{}
 			if err := indexr.Series(ref, &lset, &chks); err != nil {
-				return errors.Wrap(err, "indexr.Series")
+				return pkgerrors.Wrap(err, "indexr.Series")
 			}
 			if len(externalLabels) > 0 {
 				lset = append(lset, externalLabels...)
@@ -150,7 +151,7 @@ func run(blockPath string, labelKey string, labelValues []string, metricName str
 			for _, meta := range chks {
 				chunk, err := chunkr.Chunk(meta.Ref)
 				if err != nil {
-					return errors.Wrap(err, "chunkr.Chunk")
+					return pkgerrors.Wrap(err, "chunkr.Chunk")
 				}
 
 				var timestamps []int64
@@ -172,7 +173,7 @@ func run(blockPath string, labelKey string, labelValues []string, metricName str
 					values = append(values, v)
 				}
 				if it.Err() != nil {
-					return errors.Wrap(err, "iterator.Err")
+					return pkgerrors.Wrap(err, "iterator.Err")
 				}
 
 				if len(timestamps) == 0 {
@@ -180,13 +181,13 @@ func run(blockPath string, labelKey string, labelValues []string, metricName str
 				}
 
 				if err := wr.Write(&lset, timestamps, values); err != nil {
-					return errors.Wrap(err, fmt.Sprintf("Writer.Write(%v, %v, %v)", lset, timestamps, values))
+					return pkgerrors.Wrap(err, fmt.Sprintf("Writer.Write(%v, %v, %v)", lset, timestamps, values))
 				}
 			}
 		}
 
 		if postings.Err() != nil {
-			return errors.Wrap(postings.Err(), "postings.Err")
+			return pkgerrors.Wrap(postings.Err(), "postings.Err")
 		}
 	}
 
@@ -213,14 +214,14 @@ func runDumpIndex(blockPath string, labelKey string, labelValues []string, metri
 	if metricName != "" {
 		metricPostings, err = indexr.Postings(labels.MetricName, metricName)
 		if err != nil {
-			return errors.Wrap(err, "indexr.Postings metric")
+			return pkgerrors.Wrap(err, "indexr.Postings metric")
 		}
 	}
 
 	for _, val := range labelValues {
 		postings, err := indexr.Postings(labelKey, val)
 		if err != nil {
-			return errors.Wrap(err, "indexr.Postings")
+			return pkgerrors.Wrap(err, "indexr.Postings")
 		}
 		if metricPostings != nil {
 			postings = index.Intersect(postings, metricPostings)
@@ -231,7 +232,7 @@ func runDumpIndex(blockPath string, labelKey string, labelValues []string, metri
 			lset := labels.Labels{}
 			chks := []chunks.Meta{}
 			if err := indexr.Series(ref, &lset, &chks); err != nil {
-				return errors.Wrap(err, "indexr.Series")
+				return pkgerrors.Wrap(err, "indexr.Series")
 			}
 
 			metric := map[string]string{}
@@ -256,12 +257,12 @@ func runDumpIndex(blockPath string, labelKey string, labelValues []string, metri
 			}{Labels: metric, Chunks: metas}
 
 			if err := enc.Encode(line); err != nil {
-				return errors.Wrap(err, "encode")
+				return pkgerrors.Wrap(err, "encode")
 			}
 		}
 
 		if postings.Err() != nil {
-			return errors.Wrap(postings.Err(), "postings.Err")
+			return pkgerrors.Wrap(postings.Err(), "postings.Err")
 		}
 	}
 
@@ -276,12 +277,12 @@ func openBlock(blockPath string, awsProfile string, logger gokitlog.Logger) (*ts
 		}
 		sess, err := newAWSSession(bucket, awsProfile)
 		if err != nil {
-			return nil, nil, errors.Wrap(err, "new aws session")
+			return nil, nil, pkgerrors.Wrap(err, "new aws session")
 		}
 
 		tmpDir, err := ioutil.TempDir("", "tsdb-block-")
 		if err != nil {
-			return nil, nil, errors.Wrap(err, "create temp dir")
+			return nil, nil, pkgerrors.Wrap(err, "create temp dir")
 		}
 
 		if err := downloadS3Block(sess, bucket, key, tmpDir); err != nil {
@@ -330,7 +331,7 @@ func downloadS3Block(sess *session.Session, bucket, key, dest string) error {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				return err
 			}
-			return errors.Wrap(err, "list objects")
+			return pkgerrors.Wrap(err, "list objects")
 		}
 		for _, obj := range out.Contents {
 			if strings.HasSuffix(*obj.Key, "/") {
@@ -353,7 +354,7 @@ func downloadS3Block(sess *session.Session, bucket, key, dest string) error {
 				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 					return err
 				}
-				return errors.Wrap(err, "download object")
+				return pkgerrors.Wrap(err, "download object")
 			}
 			f.Close()
 		}
@@ -373,7 +374,7 @@ func openIndexReader(blockPath string, awsProfile string) (*index.Reader, error)
 		}
 		sess, err := newAWSSession(bucket, awsProfile)
 		if err != nil {
-			return nil, errors.Wrap(err, "new aws session")
+			return nil, pkgerrors.Wrap(err, "new aws session")
 		}
 		downloader := s3manager.NewDownloader(sess)
 		ctx, cancel := context.WithTimeout(context.Background(), s3DownloadTimeout)
@@ -388,7 +389,7 @@ func openIndexReader(blockPath string, awsProfile string) (*index.Reader, error)
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				return nil, err
 			}
-			return nil, errors.Wrap(err, "download index")
+			return nil, pkgerrors.Wrap(err, "download index")
 		}
 		return index.NewReader(byteSlice(buf.Bytes()))
 	}
