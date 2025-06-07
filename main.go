@@ -27,10 +27,18 @@ func main() {
 	minTimestamp := flag.Int64("min-timestamp", 0, "min of timestamp of datapoints to be dumped; unix time in msec")
 	maxTimestamp := flag.Int64("max-timestamp", math.MaxInt64, "min of timestamp of datapoints to be dumped; unix time in msec")
 	format := flag.String("format", "victoriametrics", "")
+	dumpIndex := flag.Bool("dump-index", false, "Dump index information in JSON and exit")
 	flag.Parse()
 
 	if *blockPath == "" {
 		log.Fatal("-block argument is required")
+	}
+
+	if *dumpIndex {
+		if err := runDumpIndex(*blockPath, *labelKey, *labelValue); err != nil {
+			log.Fatalf("error: %s", err)
+		}
+		return
 	}
 
 	if err := run(*blockPath, *labelKey, *labelValue, *format, *minTimestamp, *maxTimestamp, *externalLabels); err != nil {
@@ -126,6 +134,66 @@ func run(blockPath string, labelKey string, labelValue string, outFormat string,
 
 	if postings.Err() != nil {
 		return errors.Wrap(err, "postings.Err")
+	}
+
+	return nil
+}
+
+func runDumpIndex(blockPath string, labelKey string, labelValue string) error {
+	logger := gokitlog.NewLogfmtLogger(os.Stderr)
+	block, err := tsdb.OpenBlock(logger, blockPath, chunkenc.NewPool())
+	if err != nil {
+		return errors.Wrap(err, "tsdb.OpenBlock")
+	}
+
+	indexr, err := block.Index()
+	if err != nil {
+		return errors.Wrap(err, "block.Index")
+	}
+	defer indexr.Close()
+
+	postings, err := indexr.Postings(labelKey, labelValue)
+	if err != nil {
+		return errors.Wrap(err, "indexr.Postings")
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	for postings.Next() {
+		ref := postings.At()
+		lset := labels.Labels{}
+		chks := []chunks.Meta{}
+		if err := indexr.Series(ref, &lset, &chks); err != nil {
+			return errors.Wrap(err, "indexr.Series")
+		}
+
+		metric := map[string]string{}
+		for _, l := range lset {
+			metric[l.Name] = l.Value
+		}
+
+		type meta struct {
+			Ref     uint64 `json:"ref"`
+			MinTime int64  `json:"minTime"`
+			MaxTime int64  `json:"maxTime"`
+		}
+
+		metas := make([]meta, 0, len(chks))
+		for _, m := range chks {
+			metas = append(metas, meta{Ref: m.Ref, MinTime: m.MinTime, MaxTime: m.MaxTime})
+		}
+
+		line := struct {
+			Labels map[string]string `json:"labels"`
+			Chunks []meta            `json:"chunks"`
+		}{Labels: metric, Chunks: metas}
+
+		if err := enc.Encode(line); err != nil {
+			return errors.Wrap(err, "encode")
+		}
+	}
+
+	if postings.Err() != nil {
+		return errors.Wrap(postings.Err(), "postings.Err")
 	}
 
 	return nil
