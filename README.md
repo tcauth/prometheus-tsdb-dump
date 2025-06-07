@@ -33,6 +33,8 @@ $ prometheus-tsdb-dump -block /path/to/prometheus-data/block-ulid -format victor
 - `-label-key`: Label name to apply with `-label-value`
 - `-metric-name`: Dump only the series or index for the given metric name
 
+S3 downloads will timeout after 5 minutes to avoid hanging operations.
+
 `-metric-name` can be used together with `-label-key` and `-label-value` to
 filter by a specific metric and label value at the same time.
 
