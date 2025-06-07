@@ -34,6 +34,7 @@ func main() {
 	labelKey := flag.String("label-key", "", "")
 	labelValue := flag.String("label-value", "", "")
 	externalLabels := flag.String("external-labels", "{}", "Labels to be added to dumped result in JSON")
+	metricName := flag.String("metric-name", "", "Only dump series for this metric (__name__)")
 	minTimestamp := flag.Int64("min-timestamp", 0, "min of timestamp of datapoints to be dumped; unix time in msec")
 	maxTimestamp := flag.Int64("max-timestamp", math.MaxInt64, "min of timestamp of datapoints to be dumped; unix time in msec")
 	format := flag.String("format", "victoriametrics", "")
@@ -59,18 +60,18 @@ func main() {
 	}
 
 	if *dumpIndex {
-		if err := runDumpIndex(*blockPath, *labelKey, labelValues, *awsProfile, out); err != nil {
+		if err := runDumpIndex(*blockPath, *labelKey, labelValues, *metricName, *awsProfile, out); err != nil {
 			log.Fatalf("error: %s", err)
 		}
 		return
 	}
 
-	if err := run(*blockPath, *labelKey, labelValues, *format, *minTimestamp, *maxTimestamp, *externalLabels, *awsProfile, out); err != nil {
+	if err := run(*blockPath, *labelKey, labelValues, *metricName, *format, *minTimestamp, *maxTimestamp, *externalLabels, *awsProfile, out); err != nil {
 		log.Fatalf("error: %s", err)
 	}
 }
 
-func run(blockPath string, labelKey string, labelValues []string, outFormat string, minTimestamp int64, maxTimestamp int64, externalLabelsJSON string, awsProfile string, out io.Writer) error {
+func run(blockPath string, labelKey string, labelValues []string, metricName string, outFormat string, minTimestamp int64, maxTimestamp int64, externalLabelsJSON string, awsProfile string, out io.Writer) error {
 	externalLabelsMap := map[string]string{}
 	if err := json.NewDecoder(strings.NewReader(externalLabelsJSON)).Decode(&externalLabelsMap); err != nil {
 		return errors.Wrap(err, "decode external labels")
@@ -102,11 +103,30 @@ func run(blockPath string, labelKey string, labelValues []string, outFormat stri
 	}
 	defer chunkr.Close()
 
+	// default to all postings if no label key provided
+	if labelKey == "" {
+		allKey, allValue := index.AllPostingsKey()
+		labelKey = allKey
+		labelValues = []string{allValue}
+	}
+
+	var metricPostings index.Postings
+	if metricName != "" {
+		var err error
+		metricPostings, err = indexr.Postings(labels.MetricName, metricName)
+		if err != nil {
+			return errors.Wrap(err, "indexr.Postings metric")
+		}
+	}
+
 	var it chunkenc.Iterator
 	for _, val := range labelValues {
 		postings, err := indexr.Postings(labelKey, val)
 		if err != nil {
 			return errors.Wrap(err, "indexr.Postings")
+		}
+		if metricPostings != nil {
+			postings = index.Intersect(postings, metricPostings)
 		}
 
 		for postings.Next() {
@@ -166,7 +186,7 @@ func run(blockPath string, labelKey string, labelValues []string, outFormat stri
 	return nil
 }
 
-func runDumpIndex(blockPath string, labelKey string, labelValues []string, awsProfile string, out io.Writer) error {
+func runDumpIndex(blockPath string, labelKey string, labelValues []string, metricName string, awsProfile string, out io.Writer) error {
 	indexr, err := openIndexReader(blockPath, awsProfile)
 	if err != nil {
 		return err
@@ -175,10 +195,28 @@ func runDumpIndex(blockPath string, labelKey string, labelValues []string, awsPr
 
 	enc := json.NewEncoder(out)
 
+	// default to all postings if no label key provided
+	if labelKey == "" {
+		allKey, allValue := index.AllPostingsKey()
+		labelKey = allKey
+		labelValues = []string{allValue}
+	}
+
+	var metricPostings index.Postings
+	if metricName != "" {
+		metricPostings, err = indexr.Postings(labels.MetricName, metricName)
+		if err != nil {
+			return errors.Wrap(err, "indexr.Postings metric")
+		}
+	}
+
 	for _, val := range labelValues {
 		postings, err := indexr.Postings(labelKey, val)
 		if err != nil {
 			return errors.Wrap(err, "indexr.Postings")
+		}
+		if metricPostings != nil {
+			postings = index.Intersect(postings, metricPostings)
 		}
 
 		for postings.Next() {

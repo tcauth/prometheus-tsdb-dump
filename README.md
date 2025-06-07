@@ -30,6 +30,11 @@ $ prometheus-tsdb-dump -block /path/to/prometheus-data/block-ulid -format victor
   when reading a block from S3 with `-block`
 - `-output`: Write output to the given file instead of stdout
 - `-label-value`: Comma-separated list of label values to filter by
+- `-label-key`: Label name to apply with `-label-value`
+- `-metric-name`: Dump only the series or index for the given metric name
+
+`-metric-name` can be used together with `-label-key` and `-label-value` to
+filter by a specific metric and label value at the same time.
 
 ## Output Formats
 
