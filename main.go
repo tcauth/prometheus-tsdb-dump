@@ -4,10 +4,18 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 
 	"github.com/ryotarai/prometheus-tsdb-dump/pkg/writer"
 
@@ -27,18 +35,19 @@ func main() {
 	minTimestamp := flag.Int64("min-timestamp", 0, "min of timestamp of datapoints to be dumped; unix time in msec")
 	maxTimestamp := flag.Int64("max-timestamp", math.MaxInt64, "min of timestamp of datapoints to be dumped; unix time in msec")
 	format := flag.String("format", "victoriametrics", "")
+	awsProfile := flag.String("aws-profile", "", "AWS profile for S3 access")
 	flag.Parse()
 
 	if *blockPath == "" {
 		log.Fatal("-block argument is required")
 	}
 
-	if err := run(*blockPath, *labelKey, *labelValue, *format, *minTimestamp, *maxTimestamp, *externalLabels); err != nil {
+	if err := run(*blockPath, *labelKey, *labelValue, *format, *minTimestamp, *maxTimestamp, *externalLabels, *awsProfile); err != nil {
 		log.Fatalf("error: %s", err)
 	}
 }
 
-func run(blockPath string, labelKey string, labelValue string, outFormat string, minTimestamp int64, maxTimestamp int64, externalLabelsJSON string) error {
+func run(blockPath string, labelKey string, labelValue string, outFormat string, minTimestamp int64, maxTimestamp int64, externalLabelsJSON string, awsProfile string) error {
 	externalLabelsMap := map[string]string{}
 	if err := json.NewDecoder(strings.NewReader(externalLabelsJSON)).Decode(&externalLabelsMap); err != nil {
 		return errors.Wrap(err, "decode external labels")
@@ -46,6 +55,15 @@ func run(blockPath string, labelKey string, labelValue string, outFormat string,
 	var externalLabels labels.Labels
 	for k, v := range externalLabelsMap {
 		externalLabels = append(externalLabels, labels.Label{Name: k, Value: v})
+	}
+
+	if strings.HasPrefix(blockPath, "s3://") {
+		tmpDir, err := downloadS3Block(blockPath, awsProfile)
+		if err != nil {
+			return errors.Wrap(err, "download S3 block")
+		}
+		defer os.RemoveAll(tmpDir)
+		blockPath = tmpDir
 	}
 
 	wr, err := writer.NewWriter(outFormat)
@@ -129,4 +147,56 @@ func run(blockPath string, labelKey string, labelValue string, outFormat string,
 	}
 
 	return nil
+}
+
+func downloadS3Block(s3URL string, profile string) (string, error) {
+	u, err := url.Parse(s3URL)
+	if err != nil {
+		return "", err
+	}
+	bucket := u.Host
+	prefix := strings.TrimPrefix(u.Path, "/")
+
+	sess, err := session.NewSessionWithOptions(session.Options{
+		Profile:           profile,
+		SharedConfigState: session.SharedConfigEnable,
+	})
+	if err != nil {
+		return "", err
+	}
+	s3svc := s3.New(sess)
+	downloader := s3manager.NewDownloader(sess)
+
+	tmpDir, err := ioutil.TempDir("", "tsdb-block-")
+	if err != nil {
+		return "", err
+	}
+
+	input := &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix)}
+	err = s3svc.ListObjectsV2Pages(input, func(page *s3.ListObjectsV2Output, last bool) bool {
+		for _, obj := range page.Contents {
+			key := *obj.Key
+			rel := strings.TrimPrefix(key, prefix)
+			rel = strings.TrimLeft(rel, "/")
+			localPath := filepath.Join(tmpDir, rel)
+			if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+				return false
+			}
+			f, err := os.Create(localPath)
+			if err != nil {
+				return false
+			}
+			_, err = downloader.Download(f, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+			f.Close()
+			if err != nil {
+				return false
+			}
+		}
+		return true
+	})
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return "", err
+	}
+	return tmpDir, nil
 }
