@@ -35,6 +35,7 @@ func main() {
 	maxTimestamp := flag.Int64("max-timestamp", math.MaxInt64, "min of timestamp of datapoints to be dumped; unix time in msec")
 	format := flag.String("format", "victoriametrics", "")
 	dumpIndex := flag.Bool("dump-index", false, "Dump index information in JSON and exit")
+	awsProfile := flag.String("aws-profile", "", "AWS profile to use when accessing S3")
 	flag.Parse()
 
 	if *blockPath == "" {
@@ -42,7 +43,7 @@ func main() {
 	}
 
 	if *dumpIndex {
-		if err := runDumpIndex(*blockPath, *labelKey, *labelValue); err != nil {
+		if err := runDumpIndex(*blockPath, *labelKey, *labelValue, *awsProfile); err != nil {
 			log.Fatalf("error: %s", err)
 		}
 		return
@@ -146,8 +147,8 @@ func run(blockPath string, labelKey string, labelValue string, outFormat string,
 	return nil
 }
 
-func runDumpIndex(blockPath string, labelKey string, labelValue string) error {
-	indexr, err := openIndexReader(blockPath)
+func runDumpIndex(blockPath string, labelKey string, labelValue string, awsProfile string) error {
+	indexr, err := openIndexReader(blockPath, awsProfile)
 	if err != nil {
 		return err
 	}
@@ -200,13 +201,21 @@ func runDumpIndex(blockPath string, labelKey string, labelValue string) error {
 	return nil
 }
 
-func openIndexReader(blockPath string) (*index.Reader, error) {
+func openIndexReader(blockPath string, awsProfile string) (*index.Reader, error) {
 	if strings.HasPrefix(blockPath, "s3://") {
 		bucket, key, err := parseS3Path(blockPath)
 		if err != nil {
 			return nil, err
 		}
-		sess, err := session.NewSession()
+		var sess *session.Session
+		if awsProfile != "" {
+			sess, err = session.NewSessionWithOptions(session.Options{
+				Profile:           awsProfile,
+				SharedConfigState: session.SharedConfigEnable,
+			})
+		} else {
+			sess, err = session.NewSession()
+		}
 		if err != nil {
 			return nil, errors.Wrap(err, "new aws session")
 		}
