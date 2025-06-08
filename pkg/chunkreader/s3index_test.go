@@ -2,13 +2,13 @@ package chunkreader
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/request"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 type mockS3 struct {
@@ -16,14 +16,14 @@ type mockS3 struct {
 	data      []byte
 }
 
-func (m *mockS3) HeadObjectWithContext(ctx aws.Context, in *s3.HeadObjectInput, opts ...request.Option) (*s3.HeadObjectOutput, error) {
+func (m *mockS3) HeadObject(ctx context.Context, in *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
 	return &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(m.data)))}, nil
 }
 
-func (m *mockS3) GetObjectWithContext(ctx aws.Context, in *s3.GetObjectInput, opts ...request.Option) (*s3.GetObjectOutput, error) {
-	m.lastRange = aws.StringValue(in.Range)
+func (m *mockS3) GetObject(ctx context.Context, in *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	m.lastRange = aws.ToString(in.Range)
 	start, end := 0, len(m.data)
-	if rng := aws.StringValue(in.Range); rng != "" {
+	if rng := aws.ToString(in.Range); rng != "" {
 		fmt.Sscanf(rng, "bytes=%d-%d", &start, &end)
 		end++
 	}

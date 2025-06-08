@@ -20,10 +20,10 @@ import (
 	"github.com/ryotarai/prometheus-tsdb-dump/pkg/writer"
 
 	"errors"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	manager "github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	gokitlog "github.com/go-kit/kit/log"
 	pkgerrors "github.com/pkg/errors"
 	"github.com/prometheus/prometheus/pkg/labels"
@@ -101,11 +101,12 @@ func run(blockPath string, labelKey string, labelValues []string, metricName str
 		if err != nil {
 			return pkgerrors.Wrap(err, "parse s3 path")
 		}
-		sess, err := newAWSSession(bucket, awsProfile)
+		cfg, err := newAWSConfig(context.Background(), bucket, awsProfile)
 		if err != nil {
-			return pkgerrors.Wrap(err, "new aws session")
+			return pkgerrors.Wrap(err, "new aws config")
 		}
-		chunkr = chunkreader.NewS3ChunkReader(sess, bucket, key)
+		cli := s3.NewFromConfig(cfg)
+		chunkr = chunkreader.NewS3ChunkReader(cli, bucket, key)
 	} else {
 		chunkr = chunkreader.NewLocalChunkReader(path.Join(blockPath, "chunks"))
 	}
@@ -275,17 +276,18 @@ func openBlock(blockPath string, awsProfile string, logger gokitlog.Logger) (*ts
 		if err != nil {
 			return nil, nil, err
 		}
-		sess, err := newAWSSession(bucket, awsProfile)
+		cfg, err := newAWSConfig(context.Background(), bucket, awsProfile)
 		if err != nil {
-			return nil, nil, pkgerrors.Wrap(err, "new aws session")
+			return nil, nil, pkgerrors.Wrap(err, "new aws config")
 		}
+		cli := s3.NewFromConfig(cfg)
 
 		tmpDir, err := ioutil.TempDir("", "tsdb-block-")
 		if err != nil {
 			return nil, nil, pkgerrors.Wrap(err, "create temp dir")
 		}
 
-		if err := downloadS3Block(sess, bucket, key, tmpDir); err != nil {
+		if err := downloadS3Block(cli, bucket, key, tmpDir); err != nil {
 			os.RemoveAll(tmpDir)
 			return nil, nil, err
 		}
@@ -312,9 +314,8 @@ func openBlock(blockPath string, awsProfile string, logger gokitlog.Logger) (*ts
 	return b, cleanup, nil
 }
 
-func downloadS3Block(sess *session.Session, bucket, key, dest string) error {
-	cli := s3.New(sess)
-	downloader := s3manager.NewDownloader(sess)
+func downloadS3Block(cli *s3.Client, bucket, key, dest string) error {
+	downloader := manager.NewDownloader(cli)
 
 	ctx, cancel := context.WithTimeout(context.Background(), s3DownloadTimeout)
 	defer cancel()
@@ -322,7 +323,7 @@ func downloadS3Block(sess *session.Session, bucket, key, dest string) error {
 	prefix := path.Clean(key) + "/"
 	token := (*string)(nil)
 	for {
-		out, err := cli.ListObjectsV2WithContext(ctx, &s3.ListObjectsV2Input{
+		out, err := cli.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket:            aws.String(bucket),
 			Prefix:            aws.String(prefix),
 			ContinuationToken: token,
@@ -346,7 +347,7 @@ func downloadS3Block(sess *session.Session, bucket, key, dest string) error {
 			if err != nil {
 				return err
 			}
-			if _, err := downloader.DownloadWithContext(ctx, f, &s3.GetObjectInput{
+			if _, err := downloader.Download(ctx, f, &s3.GetObjectInput{
 				Bucket: aws.String(bucket),
 				Key:    obj.Key,
 			}); err != nil {
@@ -372,11 +373,11 @@ func openIndexReader(blockPath string, awsProfile string) (*index.Reader, error)
 		if err != nil {
 			return nil, err
 		}
-		sess, err := newAWSSession(bucket, awsProfile)
+		cfg, err := newAWSConfig(context.Background(), bucket, awsProfile)
 		if err != nil {
-			return nil, pkgerrors.Wrap(err, "new aws session")
+			return nil, pkgerrors.Wrap(err, "new aws config")
 		}
-		cli := s3.New(sess)
+		cli := s3.NewFromConfig(cfg)
 		bs, err := chunkreader.NewS3ByteSlice(cli, bucket, path.Join(key, "index"))
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
@@ -421,26 +422,21 @@ func parseLabelValues(v string) []string {
 	return res
 }
 
-func newAWSSession(bucket, profile string) (*session.Session, error) {
-	var sess *session.Session
-	var err error
+func newAWSConfig(ctx context.Context, bucket, profile string) (aws.Config, error) {
+	opts := []func(*config.LoadOptions) error{}
 	if profile != "" {
-		sess, err = session.NewSessionWithOptions(session.Options{
-			Profile:           profile,
-			SharedConfigState: session.SharedConfigEnable,
-		})
-	} else {
-		sess, err = session.NewSession()
+		opts = append(opts, config.WithSharedConfigProfile(profile))
 	}
+	cfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return nil, err
+		return aws.Config{}, err
 	}
-	if aws.StringValue(sess.Config.Region) == "" {
-		region, err := s3manager.GetBucketRegion(aws.BackgroundContext(), sess, bucket, "us-east-1")
+	if cfg.Region == "" {
+		region, err := manager.GetBucketRegion(ctx, s3.NewFromConfig(cfg), bucket)
 		if err != nil {
-			return nil, err
+			return aws.Config{}, err
 		}
-		sess.Config.Region = aws.String(region)
+		cfg.Region = region
 	}
-	return sess, nil
+	return cfg, nil
 }
