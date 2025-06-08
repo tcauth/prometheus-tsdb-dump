@@ -19,13 +19,13 @@ import (
 	"github.com/ryotarai/prometheus-tsdb-dump/pkg/chunkreader"
 	"github.com/ryotarai/prometheus-tsdb-dump/pkg/writer"
 
+	"errors"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-       gokitlog "github.com/go-kit/kit/log"
-       "errors"
-       pkgerrors "github.com/pkg/errors"
+	gokitlog "github.com/go-kit/kit/log"
+	pkgerrors "github.com/pkg/errors"
 	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
@@ -376,22 +376,15 @@ func openIndexReader(blockPath string, awsProfile string) (*index.Reader, error)
 		if err != nil {
 			return nil, pkgerrors.Wrap(err, "new aws session")
 		}
-		downloader := s3manager.NewDownloader(sess)
-		ctx, cancel := context.WithTimeout(context.Background(), s3DownloadTimeout)
-		defer cancel()
-
-		buf := aws.NewWriteAtBuffer([]byte{})
-		_, err = downloader.DownloadWithContext(ctx, buf, &s3.GetObjectInput{
-			Bucket: aws.String(bucket),
-			Key:    aws.String(path.Join(key, "index")),
-		})
+		cli := s3.New(sess)
+		bs, err := chunkreader.NewS3ByteSlice(cli, bucket, path.Join(key, "index"))
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				return nil, err
 			}
-			return nil, pkgerrors.Wrap(err, "download index")
+			return nil, pkgerrors.Wrap(err, "prepare index slice")
 		}
-		return index.NewReader(byteSlice(buf.Bytes()))
+		return index.NewReader(bs)
 	}
 	return index.NewFileReader(path.Join(blockPath, "index"))
 }
