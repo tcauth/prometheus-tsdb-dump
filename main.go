@@ -432,7 +432,9 @@ func newAWSConfig(ctx context.Context, bucket, profile string) (aws.Config, erro
 		return aws.Config{}, err
 	}
 	if cfg.Region == "" {
-		region, err := manager.GetBucketRegion(ctx, s3.NewFromConfig(cfg), bucket)
+		cfgHint := cfg
+		cfgHint.Region = "us-east-1"
+		region, err := manager.GetBucketRegion(ctx, s3.NewFromConfig(cfgHint), bucket)
 		if err != nil {
 			return aws.Config{}, err
 		}
