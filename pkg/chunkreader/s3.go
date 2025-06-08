@@ -2,29 +2,30 @@ package chunkreader
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-	"github.com/prometheus/prometheus/tsdb/chunkenc"
-	"github.com/prometheus/prometheus/tsdb/chunks"
 	"hash/crc32"
 	"os"
 	"path"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	manager "github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/prometheus/prometheus/tsdb/chunkenc"
+	"github.com/prometheus/prometheus/tsdb/chunks"
 )
 
 // s3ChunkReader implements tsdb.ChunkReader for blocks stored in S3.
 type S3ChunkReader struct {
-	downloader *s3manager.Downloader
+	downloader *manager.Downloader
 	bucket     string
 	prefix     string
 }
 
-func NewS3ChunkReader(sess *session.Session, bucket, prefix string) *S3ChunkReader {
+func NewS3ChunkReader(cli *s3.Client, bucket, prefix string) *S3ChunkReader {
 	return &S3ChunkReader{
-		downloader: s3manager.NewDownloader(sess),
+		downloader: manager.NewDownloader(cli),
 		bucket:     bucket,
 		prefix:     prefix,
 	}
@@ -39,8 +40,8 @@ func (r *S3ChunkReader) Chunk(ref uint64) (chunkenc.Chunk, error) {
 
 	// First fetch header to determine chunk length.
 	headerRange := fmt.Sprintf("bytes=%d-%d", offset, offset+chunks.MaxChunkLengthFieldSize+chunks.ChunkEncodingSize-1)
-	buf := aws.NewWriteAtBuffer([]byte{})
-	_, err := r.downloader.Download(buf, &s3.GetObjectInput{
+	buf := manager.NewWriteAtBuffer([]byte{})
+	_, err := r.downloader.Download(context.Background(), buf, &s3.GetObjectInput{
 		Bucket: aws.String(r.bucket),
 		Key:    aws.String(objKey),
 		Range:  aws.String(headerRange),
@@ -59,8 +60,8 @@ func (r *S3ChunkReader) Chunk(ref uint64) (chunkenc.Chunk, error) {
 	total := n + chunks.ChunkEncodingSize + int(chkDataLen) + crc32.Size
 	// Fetch whole chunk
 	chunkRange := fmt.Sprintf("bytes=%d-%d", offset, offset+total-1)
-	buf = aws.NewWriteAtBuffer([]byte{})
-	_, err = r.downloader.Download(buf, &s3.GetObjectInput{
+	buf = manager.NewWriteAtBuffer([]byte{})
+	_, err = r.downloader.Download(context.Background(), buf, &s3.GetObjectInput{
 		Bucket: aws.String(r.bucket),
 		Key:    aws.String(objKey),
 		Range:  aws.String(chunkRange),

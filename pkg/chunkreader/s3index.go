@@ -6,16 +6,15 @@ import (
 	"io/ioutil"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/request"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 const indexDownloadTimeout = 5 * time.Minute
 
 type s3API interface {
-	HeadObjectWithContext(aws.Context, *s3.HeadObjectInput, ...request.Option) (*s3.HeadObjectOutput, error)
-	GetObjectWithContext(aws.Context, *s3.GetObjectInput, ...request.Option) (*s3.GetObjectOutput, error)
+	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 }
 
 // s3ByteSlice allows lazy ranged reads of an index file stored in S3.
@@ -32,7 +31,7 @@ func NewS3ByteSlice(cli s3API, bucket, key string) (*s3ByteSlice, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), indexDownloadTimeout)
 	defer cancel()
 
-	out, err := cli.HeadObjectWithContext(ctx, &s3.HeadObjectInput{
+	out, err := cli.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -57,7 +56,7 @@ func (b *s3ByteSlice) Range(start, end int) []byte {
 	defer cancel()
 
 	rng := fmt.Sprintf("bytes=%d-%d", start, end-1)
-	out, err := b.cli.GetObjectWithContext(ctx, &s3.GetObjectInput{
+	out, err := b.cli.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(b.bucket),
 		Key:    aws.String(b.key),
 		Range:  aws.String(rng),
