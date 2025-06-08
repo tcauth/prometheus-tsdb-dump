@@ -34,6 +34,8 @@ $ prometheus-tsdb-dump -block /path/to/prometheus-data/block-ulid -format victor
 - `-metric-name`: Dump only the series or index for the given metric name
 
 S3 downloads will timeout after 5 minutes to avoid hanging operations.
+When reading blocks from S3 the index is streamed using ranged requests
+which reduces memory usage compared to downloading the entire file.
 
 `-metric-name` can be used together with `-label-key` and `-label-value` to
 filter by a specific metric and label value at the same time.
